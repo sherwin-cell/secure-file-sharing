@@ -1,0 +1,28 @@
+{
+  "php": "8.4",
+  "environment": {
+    "APP_ENV": "production",
+    "APP_DEBUG": "false",
+    "LOG_CHANNEL": "stderr"
+  },
+  "steps": {
+    "build": {
+      "commands": [
+        "composer install --optimize-autoloader --no-dev --no-interaction",
+        "npm install",
+        "npm run build",
+        "mkdir -p storage/framework/{sessions,views,cache,testing} storage/logs bootstrap/cache",
+        "chmod -R a+rw storage bootstrap/cache",
+        "php artisan config:cache",
+        "php artisan route:cache",
+        "php artisan view:cache"
+      ]
+    },
+    "deploy": {
+      "commands": [
+        "php artisan migrate --force",
+        "php artisan storage:link"
+      ]
+    }
+  }
+}
