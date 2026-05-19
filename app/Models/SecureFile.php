@@ -14,6 +14,7 @@ class SecureFile extends Model
         'file_size',
         'integrity_hash',
         'encryption_iv',
+        'encrypted_content',  // ← ADD THIS
     ];
 
     public function user()
@@ -27,8 +28,10 @@ class SecureFile extends Model
     public function getReadableSizeAttribute(): string
     {
         $bytes = $this->file_size;
-        if ($bytes < 1024) return $bytes . ' B';
-        if ($bytes < 1048576) return round($bytes / 1024, 1) . ' KB';
+        if ($bytes < 1024)
+            return $bytes . ' B';
+        if ($bytes < 1048576)
+            return round($bytes / 1024, 1) . ' KB';
         return round($bytes / 1048576, 1) . ' MB';
     }
 }
