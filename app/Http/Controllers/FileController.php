@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Models\SecureFile;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class FileController extends Controller
@@ -58,26 +57,29 @@ class FileController extends Controller
         $integrityHash = hash('sha256', $originalContents);
 
         // ── 3. Encrypt the file contents (AES-256-CBC) ───────────────────────
-        $iv              = random_bytes(16); // 128-bit random IV per file
-        $key             = $this->getDerivedKey();
-        $encryptedData   = openssl_encrypt($originalContents, self::CIPHER, $key, OPENSSL_RAW_DATA, $iv);
+        $iv            = random_bytes(16); // 128-bit random IV per file
+        $key           = $this->getDerivedKey();
+        $encryptedData = openssl_encrypt($originalContents, self::CIPHER, $key, OPENSSL_RAW_DATA, $iv);
 
         if ($encryptedData === false) {
             return back()->withErrors(['file' => 'Encryption failed. Please try again.']);
         }
 
-        // ── 4. Store encrypted file on disk ──────────────────────────────────
-        $storedName = Str::uuid() . '.enc'; // Opaque name — no hint of original
-        Storage::disk('local')->put('secure_files/' . $storedName, $encryptedData);
+        // ── 4. Base64-encode encrypted data for safe DB storage ──────────────
+        $storedName       = Str::uuid() . '.enc'; // Opaque name — no hint of original
+        $encryptedContent = base64_encode($encryptedData);
 
-        // ── 5. Save metadata in database ─────────────────────────────────────
+        // ── 5. Save metadata + encrypted content in database ─────────────────
+        //    No filesystem used — encrypted content lives entirely in MySQL,
+        //    which persists across Railway redeploys via mysql-volume.
         Auth::user()->files()->create([
-            'original_name'  => $uploadedFile->getClientOriginalName(),
-            'stored_name'    => $storedName,
-            'mime_type'      => $uploadedFile->getMimeType(),
-            'file_size'      => $uploadedFile->getSize(),
-            'integrity_hash' => $integrityHash,
-            'encryption_iv'  => base64_encode($iv), // Store IV alongside file record
+            'original_name'     => $uploadedFile->getClientOriginalName(),
+            'stored_name'       => $storedName,
+            'mime_type'         => $uploadedFile->getMimeType(),
+            'file_size'         => $uploadedFile->getSize(),
+            'integrity_hash'    => $integrityHash,
+            'encryption_iv'     => base64_encode($iv),   // Store IV alongside file record
+            'encrypted_content' => $encryptedContent,    // Encrypted file stored in DB
         ]);
 
         return back()->with('success', '✓ File encrypted and uploaded securely.');
@@ -91,19 +93,17 @@ class FileController extends Controller
             abort(403, 'Unauthorized access.');
         }
 
-        $storedPath = 'secure_files/' . $file->stored_name;
-
-        if (!Storage::disk('local')->exists($storedPath)) {
-            abort(404, 'File not found on server.');
+        // ── 1. Read encrypted data from database ─────────────────────────────
+        if (!$file->encrypted_content) {
+            abort(404, 'File not found.');
         }
 
-        // ── 1. Read encrypted data from disk ─────────────────────────────────
-        $encryptedData = Storage::disk('local')->get($storedPath);
+        $encryptedData = base64_decode($file->encrypted_content);
 
         // ── 2. Decrypt with AES-256-CBC ───────────────────────────────────────
-        $key             = $this->getDerivedKey();
-        $iv              = base64_decode($file->encryption_iv);
-        $decryptedData   = openssl_decrypt($encryptedData, self::CIPHER, $key, OPENSSL_RAW_DATA, $iv);
+        $key           = $this->getDerivedKey();
+        $iv            = base64_decode($file->encryption_iv);
+        $decryptedData = openssl_decrypt($encryptedData, self::CIPHER, $key, OPENSSL_RAW_DATA, $iv);
 
         if ($decryptedData === false) {
             abort(500, 'Decryption failed. File may be corrupted.');
@@ -134,10 +134,7 @@ class FileController extends Controller
             abort(403, 'Unauthorized access.');
         }
 
-        // Delete encrypted file from disk
-        Storage::disk('local')->delete('secure_files/' . $file->stored_name);
-
-        // Delete record from database
+        // Delete record from database (encrypted content removed with it)
         $file->delete();
 
         return back()->with('success', '✓ File deleted successfully.');
